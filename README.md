@@ -28,6 +28,9 @@ export VERTEX_DEPLOYED_INDEX_ID="<deployed-index-id>"     # e.g. 789012345678901
 # Optional / tuning
 export CORS_ORIGINS="http://localhost:3000"               # Comma-separated list; defaults allow local dev
 export VERTEX_API_ENDPOINT="us-central1-aiplatform.googleapis.com"  # Override if needed
+
+# Optional
+export GDELT_CONTEXT_URL="https://api.gdeltproject.org/api/v2/context/context"  # Override GDELT endpoint if needed
 ```
 
 Data/key files (if you use them) expected by the hybrid search:
@@ -51,6 +54,7 @@ The app listens on `http://0.0.0.0:8080`.
 | `POST /query` | BigQuery + enrichment + Gemini answer | `{ "question": "What are the cybersecurity risks for AI adoption in Indian cities?" }` |
 | `POST /discovery/search` | Discovery Engine search passthrough | `{ "query": "renewable energy" }` |
 | `POST /hybrid_search` | Dense + sparse (TF-IDF) + Vertex neighbors + RAG | `{ "question": "Impact of AI on transport safety", "neighbor_count": 8, "alpha": 0.5 }` |
+| `POST /gdelt/news` | Fetch recent news from GDELT Context API | `{ "query": "OpenAI", "timespan": "1d", "max_records": 10 }` |
 
 Field notes:
 * `neighbor_count` (int) – how many neighbors to request from Vertex (defaults inside code if omitted).
@@ -82,6 +86,20 @@ Hybrid search (dense + sparse + RAG):
 curl -s -X POST http://localhost:8080/hybrid_search \
   -H 'Content-Type: application/json' \
   -d '{"question": "Impact of AI on transport safety", "neighbor_count": 8, "alpha": 0.55}' | jq
+```
+
+GDELT news (no API keys required):
+```bash
+curl -s -X POST http://localhost:8080/gdelt/news \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "OpenAI", "timespan": "24h", "max_records": 10}' | jq
+```
+
+GDELT news with filters:
+```bash
+curl -s -X POST http://localhost:8080/gdelt/news \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "semiconductor supply chain", "timespan": "6h", "max_records": 25, "source_country": "IN", "source_language": "eng"}' | jq
 ```
 
 If you do not have `jq` installed, you can omit the final pipe or install it:

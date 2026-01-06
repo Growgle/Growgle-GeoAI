@@ -6,6 +6,8 @@ from vertexai.preview.language_models import TextEmbeddingModel
 import requests
 import os
 import json
+import csv
+from io import StringIO
 from dotenv import load_dotenv
 from google.oauth2 import service_account
 import google.auth.transport.requests as google_auth_requests
@@ -49,6 +51,11 @@ def _resolve_existing_path(basename: str, override: str | None = None):
 
 DISCOVERY_SA_PATH = _resolve_existing_path(
     "vertexmanager-key.json", os.getenv("DISCOVERY_SA_PATH")
+)
+
+# --- External APIs ---
+GDELT_CONTEXT_URL = os.getenv(
+    "GDELT_CONTEXT_URL", "https://api.gdeltproject.org/api/v2/context/context"
 )
 
 # --- Helpers ---
@@ -184,6 +191,85 @@ CORS(app, resources={r"/*": {"origins": origins_list}}, supports_credentials=Fal
 @app.get("/health")
 def health():
     return {"status": "ok"}, 200
+
+
+@app.post("/gdelt/news")
+def gdelt_news():
+    """Fetch recent news from the GDELT Context API.
+
+    Body JSON fields:
+    - query: string (required)  [also accepts 'question']
+    - timespan: string (optional, default '24h') e.g. '6h', '1d'
+    - max_records: int (optional, default 50)
+    - source_country: string (optional) e.g. 'IN'
+    - source_language: string (optional) e.g. 'eng'
+    """
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify(error="Invalid JSON body"), 400
+
+    query_text = (data.get("query") or data.get("question") or "").strip()
+    if not query_text:
+        return jsonify(error="'query' is required in body"), 400
+
+    timespan = str(data.get("timespan") or "24h").strip()
+    try:
+        max_records = int(data.get("max_records") or 50)
+    except Exception:
+        return jsonify(error="'max_records' must be an integer"), 400
+    max_records = max(1, min(max_records, 250))
+
+    params = {
+        "QUERY": query_text,
+        "TIMESPAN": timespan,
+        "MAXRECORDS": max_records,
+        "FORMAT": "CSV",
+    }
+    if data.get("source_country"):
+        params["SOURCECOUNTRY"] = str(data["source_country"]).strip()
+    if data.get("source_language"):
+        params["SOURCELANG"] = str(data["source_language"]).strip()
+
+    try:
+        resp = requests.get(GDELT_CONTEXT_URL, params=params, timeout=30)
+    except requests.RequestException as re:
+        return jsonify(error="Network error calling GDELT", detail=str(re)), 502
+
+    if resp.status_code != 200:
+        return jsonify(
+            error="GDELT returned error",
+            status=resp.status_code,
+            detail=(resp.text[:2000] if resp.text else ""),
+        ), 502
+
+    try:
+        reader = csv.DictReader(StringIO(resp.text))
+        articles = []
+        for row in reader:
+            if not row:
+                continue
+            # GDELT CSV sometimes includes a UTF-8 BOM on the first header (e.g., "\ufeffDate").
+            date_val = row.get("Date") or row.get("\ufeffDate") or ""
+            articles.append(
+                {
+                    "date": date_val.strip(),
+                    "url": (row.get("URL") or "").strip(),
+                    "title": (row.get("Title") or "").strip(),
+                    "image": (row.get("SharingImage") or "").strip(),
+                    "sentence": (row.get("Sentence") or "").strip(),
+                    "context": (row.get("Context") or "").strip(),
+                }
+            )
+    except Exception as e:
+        return jsonify(error="Failed to parse GDELT CSV", detail=str(e)), 500
+
+    return jsonify(
+        query=query_text,
+        gdelt_params=params,
+        count=len(articles),
+        articles=articles,
+    ), 200
 
 
 @app.post("/discovery/search")
